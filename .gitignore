@@ -1,0 +1,52 @@
+# ─── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+build/
+dist/
+
+# ─── Virtual environments ──────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ─── Environment & secrets ────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets.toml
+
+# ─── Streamlit ────────────────────────────────────────────
+streamlit.log
+.streamlit/secrets.toml
+
+# ─── IDEs / editors ───────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Project artefacts ────────────────────────────────────
+*.pdf
+!Supabase_market_report.pdf
+*.tmp
+*.bak
+
+# ─── Logs ─────────────────────────────────────────────────
+*.log
+logs/
