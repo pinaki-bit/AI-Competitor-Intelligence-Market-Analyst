@@ -1,4 +1,5 @@
 import os
+import inspect
 import time
 import tempfile
 import html
@@ -13,6 +14,25 @@ from history_store import load_history, append_history, clear_history
 
 load_dotenv()
 logger = logging.getLogger("streamlit_app")
+
+
+def _call_get_market_scores(report: str, topic: str, demo_mode: bool) -> dict:
+    """
+    Invoke get_market_scores in a way that's compatible with both the
+    current 3-arg signature (with `prefer_llm`) and the older 2-arg
+    signature, so a stale module cache after a hot-reload doesn't break
+    Demo Mode. Falls back to the heuristic on any signature mismatch.
+    """
+    try:
+        sig = inspect.signature(get_market_scores)
+        if "prefer_llm" in sig.parameters:
+            return get_market_scores(report, topic, prefer_llm=not demo_mode)
+        # Older signature: 2-arg form, always heuristic
+        return get_market_scores(report, topic)
+    except (TypeError, ValueError) as e:
+        # Signature inspection or call failed — last-ditch fallback
+        logger.warning("get_market_scores compatibility shim failed: %s", e)
+        return get_market_scores(report, topic)
 
 st.set_page_config(
     page_title="AI Market Analyst Team",
@@ -314,7 +334,7 @@ if run_btn:
                     status_callback=status_cb
                 )
 
-            scores = get_market_scores(report, topic_clean, prefer_llm=not demo_mode)
+            scores = _call_get_market_scores(report, topic_clean, demo_mode)
 
             st.session_state.report_markdown  = report
             st.session_state.orchestrator_mode= mode
