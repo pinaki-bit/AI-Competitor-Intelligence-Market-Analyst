@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: ai-competitor-intelligence
+    runtime: image
+    plan: free
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
