@@ -1,0 +1,34 @@
+[project]
+name = "ai-competitor-intel"
+version = "0.1.0"
+description = "Multi-agent AI Competitor Intelligence & Market Analyst dashboard"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Developer" }]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["venv", ".venv", "__pycache__", "build", "dist"]
+
+[tool.ruff.lint]
+# E/W: pycodestyle, F: pyflakes, I: isort, B: bugbear, UP: pyupgrade,
+# N: pep8-naming, C4: comprehensions, SIM: simplify
+select = ["E", "W", "F", "I", "B", "UP", "N", "C4", "SIM"]
+ignore = [
+    "E501",  # line too long — handled by formatter
+    "B008",  # function call in default argument (used in retry decorator)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["N802", "N803"]  # pytest function names use non-PEP8 casing
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra"

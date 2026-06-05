@@ -1,9 +1,10 @@
-import os
-import time
-import threading
+import json
 import logging
+import os
+import re
+import threading
+import time
 from functools import wraps
-from typing import Dict, Any, Generator, Tuple
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("agent_orchestrator")
@@ -129,9 +130,6 @@ def estimate_tokens(text: str) -> int:
 #
 # _sanitize_topic normalizes the string and adds a hint when the topic
 # looks like a bare product/company name, so the LLM has a clear anchor.
-import re as _re
-
-
 _KNOWN_COMPANIES = {
     "figma": "Figma (the collaborative interface design tool)",
     "vercel": "Vercel (the cloud platform for frontend frameworks)",
@@ -193,7 +191,7 @@ def _sanitize_topic(topic: str) -> str:
         return ""
     t = topic.strip()
     # Collapse internal whitespace
-    t = _re.sub(r"\s+", " ", t)
+    t = re.sub(r"\s+", " ", t)
     # Strip leading/trailing punctuation (keep hyphens inside words)
     t = t.strip(" .,;:!?\"'`~()[]{}<>*_/\\")
     # Cap length defensively
@@ -314,8 +312,8 @@ def run_custom_agent_analysis(topic: str, depth: str, status_callback=None) -> s
     the API rejects the model name (404 / NOT_FOUND — common when keys were
     issued before a model was released or after one was retired).
     """
-    from langchain_google_genai import ChatGoogleGenerativeAI
     from langchain_core.prompts import ChatPromptTemplate
+    from langchain_google_genai import ChatGoogleGenerativeAI
 
     google_key = os.environ.get("GEMINI_API_KEY")
     candidates = _models_for_tier(depth)
@@ -490,7 +488,7 @@ def run_crew_analysis(topic: str, depth: str, status_callback=None) -> str:
     calls aren't directly hookable, so we estimate spend per step and
     abort with BudgetExceeded when the cap is hit.
     """
-    from crewai import Agent, Task, Crew, Process
+    from crewai import Agent, Crew, Process, Task
     from crewai.tools import tool
     from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -614,12 +612,12 @@ def run_crew_analysis(topic: str, depth: str, status_callback=None) -> str:
         result = crew.kickoff(inputs={"topic": topic})
     except BudgetExceeded:
         raise
-    except Exception as e:
+    except Exception:
         # If the step callback aborted us, surface that as BudgetExceeded
         if _aborted["flag"]:
             raise BudgetExceeded(
                 f"CrewAI run aborted: ${guard.spent:.4f} exceeded the per-run budget."
-            )
+            ) from None
         raise
 
     if status_callback:
@@ -628,7 +626,7 @@ def run_crew_analysis(topic: str, depth: str, status_callback=None) -> str:
     return str(result)
 
 
-def run_analysis(topic: str, depth: str, status_callback=None) -> Tuple[str, str]:
+def run_analysis(topic: str, depth: str, status_callback=None) -> tuple[str, str]:
     """
     Main entrypoint to run analysis. Attempts CrewAI first and falls back to custom langchain runner.
     Returns: (report_markdown, execution_mode)
@@ -640,7 +638,7 @@ def run_analysis(topic: str, depth: str, status_callback=None) -> Tuple[str, str
         import crewai
         # Verify crewai has expected attributes to make sure it's valid
         _ = crewai.Agent
-        
+
         if status_callback:
             status_callback("Researcher", "CrewAI active. Running agent crew...")
         result = run_crew_analysis(topic, depth, status_callback)
@@ -649,7 +647,7 @@ def run_analysis(topic: str, depth: str, status_callback=None) -> Tuple[str, str
         logger.warning(f"CrewAI fallback: {str(e)}")
         if status_callback:
             status_callback("Researcher", "Falling back to Custom LangChain Orchestrator...")
-        
+
         result = run_custom_agent_analysis(topic, depth, status_callback)
         return result, "Custom LangChain Orchestrator"
 
@@ -783,14 +781,137 @@ The global B2B SaaS market is projected to grow at a **CAGR of ~15%** through 20
 """
 
 
-def get_market_scores(report_markdown: str, topic: str) -> dict:
+# ──────────────────────────────────────────────────────────────
+#  MARKET SCORING — LLM-as-judge (preferred) + heuristic fallback
+# ──────────────────────────────────────────────────────────────
+_SCORE_KEYS = (
+    "market_opportunity",
+    "competitive_pressure",
+    "growth_trajectory",
+    "innovation_score",
+    "risk_level",
+    "market_maturity",
+)
+
+_SCORING_PROMPT = """You are a senior market intelligence analyst. Read the report below about **{topic}** and score it on 6 dimensions, each on a 0–100 integer scale.
+
+Definitions:
+- market_opportunity: how large and accessible is the addressable market
+- competitive_pressure: how intense the existing competition is
+- growth_trajectory: the momentum / expansion rate implied by the report
+- innovation_score: degree of differentiation and technical novelty
+- risk_level: overall strategic and market risk exposure
+- market_maturity: how saturated / established the category is
+
+Output a JSON object with EXACTLY these six keys (lowercase, snake_case). Each value must be an integer between 0 and 100. No commentary, no markdown fences, no other text.
+
+Example: {{"market_opportunity": 78, "competitive_pressure": 64, ...}}
+
+Report:
+{report}
+"""
+
+
+def _clamp_score(value, lo=0, hi=100):
+    """Clamp a score to a 0–100 integer."""
+    try:
+        v = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return max(lo, min(hi, v))
+
+
+def _parse_score_json(text: str) -> dict | None:
+    """
+    Robustly extract a {key: int, ...} score dict from LLM output.
+
+    Handles:
+    - bare JSON
+    - ```json ... ``` fenced JSON
+    - JSON with surrounding prose
+    - Missing keys (filled with None)
+    - Out-of-range values (clamped)
+    """
+    if not text:
+        return None
+    s = text.strip()
+    # Strip markdown fences if present
+    if s.startswith("```"):
+        s = re.sub(r"^```(?:json)?\s*", "", s)
+        s = re.sub(r"\s*```\s*$", "", s)
+    # Find the first {...} block
+    start = s.find("{")
+    end = s.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    candidate = s[start:end + 1]
+    try:
+        data = json.loads(candidate)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    result = {}
+    for k in _SCORE_KEYS:
+        if k in data:
+            v = _clamp_score(data[k])
+            if v is not None:
+                result[k] = v
+    # All six required for a successful parse
+    if len(result) != len(_SCORE_KEYS):
+        return None
+    return result
+
+
+def score_market_with_llm(
+    report_markdown: str,
+    topic: str,
+    model_name: str | None = None,
+) -> dict | None:
+    """
+    Use an LLM to score a market intelligence report.
+
+    Returns a dict of 6 scores (0–100 ints) on success, or None on any
+    failure (missing key, parse error, etc.). Callers should fall back to
+    the heuristic scorer when this returns None.
+    """
+    if not report_markdown or not topic:
+        return None
+    if not os.environ.get("GEMINI_API_KEY"):
+        return None
+    try:
+        from langchain_core.prompts import ChatPromptTemplate
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        name = model_name or _models_for_tier("Quick")[0]
+        llm = ChatGoogleGenerativeAI(
+            model=name,
+            google_api_key=os.environ.get("GEMINI_API_KEY"),
+            temperature=0.0,  # scoring should be deterministic
+        )
+        # Truncate the report to keep the scoring call cheap (~20k tokens max)
+        truncated = (report_markdown or "")[:20_000]
+        prompt = ChatPromptTemplate.from_template(_SCORING_PROMPT)
+        chain = prompt | llm
+        msg = chain.invoke({"topic": topic, "report": truncated})
+        content = msg.content if isinstance(msg.content, str) else "".join(
+            getattr(c, "text", str(c)) for c in msg.content
+        )
+        return _parse_score_json(content)
+    except Exception as e:
+        logger.warning(f"LLM scoring failed, will fall back to heuristic: {e}")
+        return None
+
+
+def _heuristic_market_scores(report_markdown: str, topic: str) -> dict:
     """
     Derive illustrative market intelligence scores for dashboard display.
 
     The scores combine a deterministic topic seed with lightweight keyword
     signals pulled from the generated report. They are intended as a quick
     at-a-glance summary, NOT as authoritative metrics. For real scoring,
-    add a dedicated LLM pass that emits structured numeric scores.
+    use `score_market_with_llm` which calls a Gemini pass to emit
+    structured numeric scores.
 
     Returns a dict with score keys on a 0–100 scale.
     """
@@ -823,3 +944,23 @@ def get_market_scores(report_markdown: str, topic: str) -> dict:
         "market_maturity":     clamp(base(55, 20) + signal(
             ["mature", "saturat", "established", "consolidat"])),
     }
+
+
+def get_market_scores(report_markdown: str, topic: str,
+                      prefer_llm: bool = True) -> dict:
+    """
+    Return market intelligence scores for the report.
+
+    If `prefer_llm` is True AND a Gemini API key is configured, this calls
+    `score_market_with_llm` for real LLM-as-judge scoring. On any LLM
+    failure (missing key, parse error, network) it falls back to
+    `_heuristic_market_scores` so the dashboard always has values to show.
+
+    The `prefer_llm=False` path is used by Demo Mode so the report works
+    without an API key.
+    """
+    if prefer_llm:
+        llm_scores = score_market_with_llm(report_markdown, topic)
+        if llm_scores is not None:
+            return llm_scores
+    return _heuristic_market_scores(report_markdown, topic)

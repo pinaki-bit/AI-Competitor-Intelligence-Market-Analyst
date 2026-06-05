@@ -2,14 +2,17 @@ import os
 import time
 import tempfile
 import html
+import logging
 from pathlib import Path
 from datetime import datetime
 import streamlit as st
 from dotenv import load_dotenv
 from agents import run_analysis, run_mock_analysis, get_market_scores
 from pdf_generator import generate_pdf_from_markdown
+from history_store import load_history, append_history, clear_history
 
 load_dotenv()
+logger = logging.getLogger("streamlit_app")
 
 st.set_page_config(
     page_title="AI Market Analyst Team",
@@ -27,10 +30,12 @@ VALID_DEPTHS = ("Quick", "Deep Dive")
 RESET_KEYS = (
     "report_markdown", "orchestrator_mode", "topic_analyzed",
     "market_scores", "agent_steps", "loaded_from_history",
+    "demo_mode_active",
 )
 RESET_DEFAULTS = {
     "agent_steps": [],
     "market_scores": {},
+    "demo_mode_active": False,
 }
 
 
@@ -71,10 +76,20 @@ defaults = {
     "agent_steps": [],
     "history": [],
     "loaded_from_history": False,
+    "running": False,  # concurrent-run guard
+    "demo_mode_active": False,  # tracks whether the current report came from demo mode
 }
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+# Hydrate history from disk on first load so a refresh doesn't lose it.
+if "history_hydrated" not in st.session_state:
+    try:
+        st.session_state.history = load_history(max_items=MAX_HISTORY_ITEMS)
+    except Exception:
+        st.session_state.history = []
+    st.session_state.history_hydrated = True
 
 # ═══════════════════════════════════════════════
 #  SIDEBAR
@@ -170,7 +185,17 @@ with st.sidebar:
                     st.session_state.market_scores   = item["scores"]
                     st.session_state.agent_steps     = []
                     st.session_state.loaded_from_history = True
+                    st.session_state.demo_mode_active = (item.get("mode") == "Simulation Mode")
                     st.rerun()
+
+        if st.button("🗑️ Clear history", key="clear_history",
+                     help="Remove all saved analyses from this device",
+                     use_container_width=True):
+            try:
+                clear_history()
+            finally:
+                st.session_state.history = []
+                st.rerun()
 
     st.markdown("<hr style='border-color:rgba(255,255,255,0.05);margin:1.2rem 0;'>",
                 unsafe_allow_html=True)
@@ -223,7 +248,9 @@ with col_inp:
         label_visibility="collapsed",
         max_chars=MAX_TOPIC_LENGTH)
 with col_btn:
-    run_btn = st.button("Analyse ⚡", use_container_width=True)
+    run_btn = st.button("Analyse ⚡", use_container_width=True,
+                        disabled=st.session_state.running,
+                        help="Disabled while an analysis is in progress")
 
 if st.session_state.report_markdown:
     if st.button("🗑️ Clear & New Analysis", use_container_width=False):
@@ -244,6 +271,8 @@ if run_btn:
     elif not demo_mode and not os.environ.get("TAVILY_API_KEY"):
         st.error("🔑  Tavily API Key is missing. Add it in the sidebar or enable Demo Mode.")
     else:
+        # Concurrent-run guard: flip the flag, release on every exit path.
+        st.session_state.running = True
         st.session_state.agent_steps = []
         steps_placeholder = st.empty()
 
@@ -285,28 +314,37 @@ if run_btn:
                     status_callback=status_cb
                 )
 
-            scores = get_market_scores(report, topic_clean)
+            scores = get_market_scores(report, topic_clean, prefer_llm=not demo_mode)
 
             st.session_state.report_markdown  = report
             st.session_state.orchestrator_mode= mode
             st.session_state.topic_analyzed   = topic_clean
             st.session_state.market_scores    = scores
+            st.session_state.demo_mode_active = demo_mode
 
-            st.session_state.history.append({
+            new_entry = {
                 "topic":     topic_clean,
                 "mode":      mode,
                 "markdown":  report,
                 "scores":    scores,
                 "timestamp": datetime.now().strftime("%d %b %H:%M"),
-            })
+            }
+            st.session_state.history.append(new_entry)
             if len(st.session_state.history) > MAX_HISTORY_ITEMS:
                 st.session_state.history = st.session_state.history[-MAX_HISTORY_ITEMS:]
+            # Persist to disk so a browser refresh doesn't lose the entry.
+            try:
+                append_history(new_entry, max_items=MAX_HISTORY_ITEMS)
+            except Exception as persist_err:
+                logger.warning("Could not persist history: %s", persist_err)
 
             steps_placeholder.empty()
             st.success(f"✅  Report compiled via **{mode}** — topic: **{topic_clean}**")
 
         except Exception as e:
             st.error(f"❌  Orchestration error: {str(e)}")
+        finally:
+            st.session_state.running = False
 
 # ═══════════════════════════════════════════════
 #  RESULTS
@@ -318,12 +356,20 @@ if st.session_state.report_markdown:
     with h_col1:
         wc   = len(st.session_state.report_markdown.split())
         mins = max(1, wc // 200)
+        demo_badge = ""
+        if st.session_state.demo_mode_active:
+            demo_badge = (
+                " &nbsp;&nbsp;<span style='background:linear-gradient(135deg,#f59e0b,#ef4444);"
+                "color:#fff;padding:3px 10px;border-radius:6px;font-size:0.7rem;"
+                "font-weight:700;letter-spacing:0.05em;'>⚠ DEMO MODE — ILLUSTRATIVE DATA</span>"
+            )
         st.markdown(f"""
         <div style="margin-bottom:0.6rem;">
             <span style="font-family:'Outfit',sans-serif;font-size:1.5rem;font-weight:800;color:#e2e8f0;">
                 📋 {html.escape(st.session_state.topic_analyzed)}
             </span>
             &nbsp;&nbsp;<span class="read-badge">⏱ ~{mins} min read &nbsp;·&nbsp; {wc:,} words</span>
+            {demo_badge}
         </div>""", unsafe_allow_html=True)
 
     with h_col2:

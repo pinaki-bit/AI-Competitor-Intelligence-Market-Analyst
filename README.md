@@ -15,6 +15,8 @@ The system features a **dual-mode architecture** built for resilience. If `crewa
 *   **PDF Generation**: [FPDF2](https://pyfpdf.github.io/fpdf2/) for clean, corporate-styled reports.
 *   **Reliability**: Token-aware `CostGuard` (per-run USD cap, default $0.50, applies to BOTH the CrewAI and the custom LangChain paths), `RateLimiter` (12 RPM sliding window), and exponential-backoff `retry` decorator on all LLM/search calls.
 *   **Topic handling**: Built-in `_sanitize_topic` expands bare product names like `Figma` / `Vercel` / `Supabase` into disambiguated strings so the LLM doesn't misread them. Override defaults with `GEMINI_MODEL_FAST` / `GEMINI_MODEL_PRO`.
+*   **Scoring**: LLM-as-judge market scores (6 dimensions, 0–100) with a deterministic heuristic fallback so the dashboard always has values. Demo Mode always uses the heuristic.
+*   **Persistence**: Analysis history is saved to `~/.market_analyst/history.json` (override with `MARKET_ANALYST_HISTORY_PATH`) so a browser refresh doesn't lose your work.
 
 ---
 
@@ -34,13 +36,20 @@ market-analyst-agent/
 ├── app.py                # Streamlit Frontend Dashboard UI
 ├── agents.py             # Agent Configurations (CrewAI / Custom fallback)
 ├── pdf_generator.py      # Markdown to PDF renderer (fpdf2)
+├── history_store.py      # Atomic JSON persistence for analysis history
 ├── styles.css            # Glassmorphism / dark-mode styling
 ├── requirements.txt      # Python dependencies
+├── pyproject.toml        # Ruff + pytest configuration
 ├── .env.example          # Sample environment configuration
 ├── .gitignore            # Standard Python + Streamlit exclusions
-├── tests/                # Pytest suite — 67 tests, no network required
+├── LICENSE               # MIT License
+├── CONTRIBUTING.md       # Contribution guidelines
+├── .github/workflows/    # GitHub Actions CI (ruff + pytest on 3.11/3.12)
+│   └── ci.yml
+├── tests/                # Pytest suite — 105 tests, no network required
 │   ├── test_agents.py
-│   └── test_pdf_generator.py
+│   ├── test_pdf_generator.py
+│   └── test_history_store.py
 └── README.md             # Project documentation
 ```
 
@@ -85,7 +94,7 @@ The PDF converter parses Markdown syntax line-by-side and is hardened against ma
 
 ## 🧪 Tests
 
-The project ships with a 67-test `pytest` suite covering the PDF renderer, the agent helpers, model selection / fallback, and topic sanitization. Nothing in the suite hits the network — all LLM and Tavily calls are mocked.
+The project ships with a 105-test `pytest` suite covering the PDF renderer, the agent helpers, model selection / fallback, topic sanitization, market-score parsing, and history persistence. Nothing in the suite hits the network — all LLM and Tavily calls are mocked.
 
 ```powershell
 .\venv\Scripts\Activate.ps1
@@ -95,8 +104,25 @@ pytest tests/ -v
 
 Coverage highlights:
 * `test_pdf_generator.py` — empty input, ragged tables, fenced code blocks, nested lists, horizontal rules, inline code/bold, Unicode content, unbalanced markdown, multi-page output, auto-created output directories.
-* `test_agents.py` — `CostGuard` budget enforcement, `RateLimiter` sliding window, `retry` decorator (success/retry/exhaustion), `get_market_scores` range & determinism, `run_mock_analysis` callbacks, missing `TAVILY_API_KEY` fallback, model selection & fallback chain, model-not-found detection, `_sanitize_topic` (known company expansion, whitespace/punctuation stripping, length cap), `_topic_search_queries` (multi-angle coverage).
+* `test_agents.py` — `CostGuard` budget enforcement, `RateLimiter` sliding window, `retry` decorator (success/retry/exhaustion), `get_market_scores` dispatcher (LLM path + heuristic fallback), `run_mock_analysis` callbacks, missing `TAVILY_API_KEY` fallback, model selection & fallback chain, model-not-found detection, `_sanitize_topic` (known company expansion, whitespace/punctuation stripping, length cap), `_topic_search_queries` (multi-angle coverage), score JSON parsing (clean / fenced / prose-wrapped / out-of-range / missing-keys).
+* `test_history_store.py` — atomic JSON persistence, schema-corruption recovery, env-var path overrides, concurrent-append safety (10 threads × 10 writes), clear-and-resume.
 
 ## 💸 Cost & Rate Safety
 
 Every LLM call in both orchestrators (CrewAI and the custom LangChain fallback) is tracked by a `CostGuard` (default $0.50/run, override with `AGENT_BUDGET_USD` env var) and a module-level `RateLimiter` (12 RPM, well under Gemini's free-tier 15 RPM). The `retry` decorator short-circuits on `BudgetExceeded` so a runaway run fails fast instead of burning more spend. The CrewAI path uses a `step_callback` to estimate spend per agent step and abort the crew if the budget cap is hit.
+
+## 🔁 History & Persistence
+
+Every completed analysis is appended to a JSON file on disk (default `~/.market_analyst/history.json`, override with `MARKET_ANALYST_HISTORY_PATH`). The file is written atomically via temp-file + `os.replace`, and the read-modify-write cycle is serialized on a module-level lock so concurrent Streamlit threads can't lose updates. The list is capped at 20 entries to keep the file small. Use the **🗑️ Clear history** button in the sidebar to wipe the store.
+
+## 🤖 Continuous Integration
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push and PR against `main` / `master`:
+
+- Lint with `ruff check` + `ruff format --check`
+- Run the full 105-test pytest suite on Python 3.11 and 3.12
+- All steps run without network access (no API keys required)
+
+## 📜 License
+
+MIT — see [`LICENSE`](./LICENSE). Contributions are welcome — see [`CONTRIBUTING.md`](./CONTRIBUTING.md).

@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    name: Test (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Skip crewai on CI — it's heavy and not needed for unit tests
+          # (crewai is only required for the CrewAI orchestrator path; the
+          #  unit tests use the langchain fallback + mock paths).
+          grep -v '^crewai' requirements.txt > requirements-ci.txt
+          pip install -r requirements-ci.txt
+          pip install crewai==1.14.6
+
+      - name: Lint with ruff
+        run: |
+          ruff check . --exclude venv --exclude __pycache__
+          ruff format --check . --exclude venv --exclude __pycache__
+
+      - name: Run tests
+        env:
+          # Don't hit the network for tests
+          GEMINI_API_KEY: ""
+          TAVILY_API_KEY: ""
+        run: |
+          pytest tests/ -v --tb=short

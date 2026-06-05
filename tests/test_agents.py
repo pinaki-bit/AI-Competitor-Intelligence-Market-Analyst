@@ -1,5 +1,6 @@
 """Tests for agents.py helpers — CostGuard, RateLimiter, retry, scores, mock."""
 import time
+import json
 import pytest
 
 import agents
@@ -17,6 +18,11 @@ from agents import (
     _MODEL_TIERS,
     _models_for_tier,
     _is_model_not_found,
+    _heuristic_market_scores,
+    _parse_score_json,
+    _clamp_score,
+    score_market_with_llm,
+    _SCORE_KEYS,
 )
 
 
@@ -324,3 +330,183 @@ class TestTopicSearchQueries:
         queries = _topic_search_queries("")
         # Should still produce some output without crashing
         assert isinstance(queries, list)
+
+
+# ──────────────────────────────────────────────────────────────
+#  Score parsing — LLM JSON output is messy, we have to be robust
+# ──────────────────────────────────────────────────────────────
+class TestClampScore:
+    def test_within_range_passes_through(self):
+        assert _clamp_score(50) == 50
+        assert _clamp_score(0) == 0
+        assert _clamp_score(100) == 100
+
+    def test_clamps_above_max(self):
+        assert _clamp_score(150) == 100
+        assert _clamp_score(999) == 100
+
+    def test_clamps_below_min(self):
+        assert _clamp_score(-10) == 0
+        assert _clamp_score(-999) == 0
+
+    def test_rounds_floats(self):
+        assert _clamp_score(72.4) == 72
+        assert _clamp_score(72.6) == 73
+
+    def test_non_numeric_returns_none(self):
+        assert _clamp_score("abc") is None
+        assert _clamp_score(None) is None
+        assert _clamp_score([]) is None
+
+
+class TestParseScoreJson:
+    def test_parses_clean_json(self):
+        text = '{"market_opportunity": 72, "competitive_pressure": 65, "growth_trajectory": 78, "innovation_score": 60, "risk_level": 40, "market_maturity": 55}'
+        result = _parse_score_json(text)
+        assert result is not None
+        assert len(result) == 6
+        assert result["market_opportunity"] == 72
+
+    def test_parses_fenced_json(self):
+        text = '```json\n{"market_opportunity": 72, "competitive_pressure": 65, "growth_trajectory": 78, "innovation_score": 60, "risk_level": 40, "market_maturity": 55}\n```'
+        result = _parse_score_json(text)
+        assert result is not None
+        assert result["market_opportunity"] == 72
+
+    def test_parses_json_with_surrounding_prose(self):
+        text = 'Here are the scores: {"market_opportunity": 80, "competitive_pressure": 70, "growth_trajectory": 75, "innovation_score": 65, "risk_level": 45, "market_maturity": 50} hope this helps!'
+        result = _parse_score_json(text)
+        assert result is not None
+        assert result["market_opportunity"] == 80
+
+    def test_clamps_out_of_range_values(self):
+        text = '{"market_opportunity": 150, "competitive_pressure": -10, "growth_trajectory": 78, "innovation_score": 60, "risk_level": 40, "market_maturity": 55}'
+        result = _parse_score_json(text)
+        assert result is not None
+        assert result["market_opportunity"] == 100  # clamped
+        assert result["competitive_pressure"] == 0   # clamped
+
+    def test_missing_keys_returns_none(self):
+        # Missing market_maturity — partial dict, not a valid result
+        text = '{"market_opportunity": 72, "competitive_pressure": 65, "growth_trajectory": 78, "innovation_score": 60, "risk_level": 40}'
+        assert _parse_score_json(text) is None
+
+    def test_empty_input_returns_none(self):
+        assert _parse_score_json("") is None
+        assert _parse_score_json(None) is None
+
+    def test_garbage_input_returns_none(self):
+        assert _parse_score_json("not json at all") is None
+        assert _parse_score_json("{ broken json") is None
+        assert _parse_score_json("[]") is None  # valid JSON but wrong type
+
+    def test_non_int_values_are_skipped(self):
+        # Some values are strings — should be skipped, result is partial
+        text = '{"market_opportunity": "high", "competitive_pressure": 65, "growth_trajectory": 78, "innovation_score": 60, "risk_level": 40, "market_maturity": 55}'
+        # _clamp_score returns None for "high", so result has 5/6 keys
+        # and is rejected
+        assert _parse_score_json(text) is None
+
+
+# ──────────────────────────────────────────────────────────────
+#  LLM-as-judge scoring
+# ──────────────────────────────────────────────────────────────
+class TestLLMScoring:
+    def test_returns_none_without_api_key(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        result = score_market_with_llm("Some report", "Figma")
+        assert result is None
+
+    def test_returns_none_for_empty_inputs(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake")
+        assert score_market_with_llm("", "Figma") is None
+        assert score_market_with_llm("Report", "") is None
+        assert score_market_with_llm(None, "Figma") is None
+
+    def test_returns_parsed_scores_on_success(self, monkeypatch):
+        # Mock the LLM to return clean JSON
+        monkeypatch.setenv("GEMINI_API_KEY", "fake")
+
+        from unittest.mock import MagicMock
+        from langchain_core.runnables import RunnableLambda
+
+        fake_msg = MagicMock()
+        fake_msg.content = json.dumps({
+            "market_opportunity": 75,
+            "competitive_pressure": 60,
+            "growth_trajectory": 80,
+            "innovation_score": 70,
+            "risk_level": 35,
+            "market_maturity": 50,
+        })
+        # RunnableLambda satisfies the Runnable protocol so `prompt | llm`
+        # doesn't blow up trying to coerce the mock to a Runnable.
+        fake_llm = RunnableLambda(lambda _input: fake_msg)
+
+        import langchain_google_genai
+        monkeypatch.setattr(langchain_google_genai, "ChatGoogleGenerativeAI",
+                            MagicMock(return_value=fake_llm))
+
+        result = score_market_with_llm("# Some report about Figma", "Figma")
+        assert result is not None
+        assert result["market_opportunity"] == 75
+        assert all(k in result for k in _SCORE_KEYS)
+
+    def test_falls_back_to_none_on_llm_error(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake")
+
+        from unittest.mock import MagicMock
+        from langchain_core.runnables import RunnableLambda
+
+        def boom(_input):
+            raise RuntimeError("network down")
+        fake_llm = RunnableLambda(boom)
+
+        import langchain_google_genai
+        monkeypatch.setattr(langchain_google_genai, "ChatGoogleGenerativeAI",
+                            MagicMock(return_value=fake_llm))
+
+        result = score_market_with_llm("Some report", "Figma")
+        assert result is None
+
+
+# ──────────────────────────────────────────────────────────────
+#  Dispatcher: get_market_scores picks the right path
+# ──────────────────────────────────────────────────────────────
+class TestGetMarketScoresDispatcher:
+    def test_prefer_llm_false_uses_heuristic(self, monkeypatch):
+        # Even with an API key, prefer_llm=False must use heuristic
+        monkeypatch.setenv("GEMINI_API_KEY", "fake")
+        result = get_market_scores("Some report", "Figma", prefer_llm=False)
+        # Heuristic always returns all 6 keys
+        assert all(k in result for k in _SCORE_KEYS)
+
+    def test_prefer_llm_true_falls_back_to_heuristic_without_key(self, monkeypatch):
+        # No API key → LLM path returns None → heuristic kicks in
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        result = get_market_scores("Some report", "Figma", prefer_llm=True)
+        assert all(k in result for k in _SCORE_KEYS)
+
+    def test_prefer_llm_true_uses_llm_when_available(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake")
+
+        from unittest.mock import MagicMock
+        from langchain_core.runnables import RunnableLambda
+
+        fake_msg = MagicMock()
+        fake_msg.content = json.dumps({k: 60 for k in _SCORE_KEYS})
+        fake_llm = RunnableLambda(lambda _input: fake_msg)
+
+        import langchain_google_genai
+        monkeypatch.setattr(langchain_google_genai, "ChatGoogleGenerativeAI",
+                            MagicMock(return_value=fake_llm))
+
+        result = get_market_scores("Some report", "Figma", prefer_llm=True)
+        assert result["market_opportunity"] == 60
+
+    def test_heuristic_and_dispatcher_return_same_keys(self):
+        # Both paths must return the same shape
+        h = _heuristic_market_scores("Some report", "Figma")
+        assert set(h.keys()) == set(_SCORE_KEYS)
+        for v in h.values():
+            assert 0 <= v <= 100
