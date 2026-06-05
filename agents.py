@@ -337,7 +337,6 @@ def run_custom_agent_analysis(topic: str, depth: str, status_callback=None) -> s
         model=model_name,
         google_api_key=google_key,
         temperature=0.2,
-        transport="rest",  # REST is more reliable than gRPC for model-not-found errors
     )
 
     guard = CostGuard()
@@ -347,7 +346,6 @@ def run_custom_agent_analysis(topic: str, depth: str, status_callback=None) -> s
             model=name,
             google_api_key=google_key,
             temperature=0.2,
-            transport="rest",
         )
 
     def _invoke(prompt, **vars):
@@ -513,7 +511,6 @@ def run_crew_analysis(topic: str, depth: str, status_callback=None) -> str:
         model=model_name,
         google_api_key=google_key,
         temperature=0.2,
-        transport="rest",
     )
 
     # Per-run budget tracker. We can't intercept CrewAI's internal LLM
