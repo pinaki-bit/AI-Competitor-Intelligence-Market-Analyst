@@ -19,6 +19,7 @@ Schema (v1):
   ]
 }
 """
+
 import contextlib
 import json
 import os
@@ -101,7 +102,9 @@ def save_history(items: list[dict[str, Any]]) -> None:
             raise
 
 
-def append_history(entry: dict[str, Any], max_items: int = _DEFAULT_MAX_ITEMS) -> list[dict[str, Any]]:
+def append_history(
+    entry: dict[str, Any], max_items: int = _DEFAULT_MAX_ITEMS
+) -> list[dict[str, Any]]:
     """
     Append a new entry and return the updated history (newest-first).
 

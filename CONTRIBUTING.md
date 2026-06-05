@@ -31,7 +31,7 @@ Mode** in the sidebar — the mock analysis path is fully runnable offline.
 pytest tests/ -v
 ```
 
-The suite has 80+ tests, all offline — LLM and Tavily calls are mocked.
+The suite has 116 tests, all offline — LLM and Tavily calls are mocked.
 Coverage highlights:
 
 - `test_agents.py` — `CostGuard` budget enforcement, `RateLimiter`

@@ -1,28 +1,30 @@
 """Tests for agents.py helpers — CostGuard, RateLimiter, retry, scores, mock."""
-import time
+
 import json
+import time
+
 import pytest
 
 import agents
 from agents import (
-    CostGuard,
-    RateLimiter,
-    BudgetExceeded,
-    retry,
-    estimate_tokens,
-    get_market_scores,
-    run_mock_analysis,
-    _sanitize_topic,
-    _topic_search_queries,
     _GEMINI_COST_PER_1K,
     _MODEL_TIERS,
-    _models_for_tier,
-    _is_model_not_found,
-    _heuristic_market_scores,
-    _parse_score_json,
-    _clamp_score,
-    score_market_with_llm,
     _SCORE_KEYS,
+    BudgetExceededError,
+    CostGuard,
+    RateLimiter,
+    _clamp_score,
+    _heuristic_market_scores,
+    _is_model_not_found,
+    _models_for_tier,
+    _parse_score_json,
+    _sanitize_topic,
+    _topic_search_queries,
+    estimate_tokens,
+    get_market_scores,
+    retry,
+    run_mock_analysis,
+    score_market_with_llm,
 )
 
 
@@ -59,7 +61,7 @@ class TestCostGuard:
 
     def test_budget_exceeded_raises(self):
         g = CostGuard(budget_usd=0.01)
-        with pytest.raises(BudgetExceeded):
+        with pytest.raises(BudgetExceededError):
             g.record("gemini-1.5-pro", 100_000, 100_000)
 
     def test_unknown_model_uses_flash_pricing(self):
@@ -74,9 +76,9 @@ class TestCostGuard:
         @retry(max_attempts=3, initial_delay=0.01)
         def explode():
             calls.append(1)
-            raise BudgetExceeded("nope")
+            raise BudgetExceededError("nope")
 
-        with pytest.raises(BudgetExceeded):
+        with pytest.raises(BudgetExceededError):
             explode()
         # Should NOT have retried — budget errors are fatal
         assert len(calls) == 1
@@ -129,8 +131,14 @@ class TestMarketScores:
     def test_returns_all_keys(self):
         report = "Some report with growth and opportunity keywords."
         scores = get_market_scores(report, "Vercel")
-        expected = {"market_opportunity", "competitive_pressure", "growth_trajectory",
-                    "innovation_score", "risk_level", "market_maturity"}
+        expected = {
+            "market_opportunity",
+            "competitive_pressure",
+            "growth_trajectory",
+            "innovation_score",
+            "risk_level",
+            "market_maturity",
+        }
         assert set(scores.keys()) == expected
 
     def test_all_values_in_range(self):
@@ -243,7 +251,9 @@ class TestModelSelection:
 
     def test_model_not_found_detection(self):
         assert _is_model_not_found(Exception("404 NOT_FOUND: model is not found"))
-        assert _is_model_not_found(Exception("models/gemini-1.5-flash is not found for API version v1beta"))
+        assert _is_model_not_found(
+            Exception("models/gemini-1.5-flash is not found for API version v1beta")
+        )
         assert _is_model_not_found(Exception("model not found"))
         # Network errors should NOT be treated as model-not-found
         assert not _is_model_not_found(Exception("Connection timeout"))
@@ -384,7 +394,7 @@ class TestParseScoreJson:
         result = _parse_score_json(text)
         assert result is not None
         assert result["market_opportunity"] == 100  # clamped
-        assert result["competitive_pressure"] == 0   # clamped
+        assert result["competitive_pressure"] == 0  # clamped
 
     def test_missing_keys_returns_none(self):
         # Missing market_maturity — partial dict, not a valid result
@@ -428,24 +438,29 @@ class TestLLMScoring:
         monkeypatch.setenv("GEMINI_API_KEY", "fake")
 
         from unittest.mock import MagicMock
+
         from langchain_core.runnables import RunnableLambda
 
         fake_msg = MagicMock()
-        fake_msg.content = json.dumps({
-            "market_opportunity": 75,
-            "competitive_pressure": 60,
-            "growth_trajectory": 80,
-            "innovation_score": 70,
-            "risk_level": 35,
-            "market_maturity": 50,
-        })
+        fake_msg.content = json.dumps(
+            {
+                "market_opportunity": 75,
+                "competitive_pressure": 60,
+                "growth_trajectory": 80,
+                "innovation_score": 70,
+                "risk_level": 35,
+                "market_maturity": 50,
+            }
+        )
         # RunnableLambda satisfies the Runnable protocol so `prompt | llm`
         # doesn't blow up trying to coerce the mock to a Runnable.
         fake_llm = RunnableLambda(lambda _input: fake_msg)
 
         import langchain_google_genai
-        monkeypatch.setattr(langchain_google_genai, "ChatGoogleGenerativeAI",
-                            MagicMock(return_value=fake_llm))
+
+        monkeypatch.setattr(
+            langchain_google_genai, "ChatGoogleGenerativeAI", MagicMock(return_value=fake_llm)
+        )
 
         result = score_market_with_llm("# Some report about Figma", "Figma")
         assert result is not None
@@ -456,15 +471,19 @@ class TestLLMScoring:
         monkeypatch.setenv("GEMINI_API_KEY", "fake")
 
         from unittest.mock import MagicMock
+
         from langchain_core.runnables import RunnableLambda
 
         def boom(_input):
             raise RuntimeError("network down")
+
         fake_llm = RunnableLambda(boom)
 
         import langchain_google_genai
-        monkeypatch.setattr(langchain_google_genai, "ChatGoogleGenerativeAI",
-                            MagicMock(return_value=fake_llm))
+
+        monkeypatch.setattr(
+            langchain_google_genai, "ChatGoogleGenerativeAI", MagicMock(return_value=fake_llm)
+        )
 
         result = score_market_with_llm("Some report", "Figma")
         assert result is None
@@ -491,15 +510,18 @@ class TestGetMarketScoresDispatcher:
         monkeypatch.setenv("GEMINI_API_KEY", "fake")
 
         from unittest.mock import MagicMock
+
         from langchain_core.runnables import RunnableLambda
 
         fake_msg = MagicMock()
-        fake_msg.content = json.dumps({k: 60 for k in _SCORE_KEYS})
+        fake_msg.content = json.dumps(dict.fromkeys(_SCORE_KEYS, 60))
         fake_llm = RunnableLambda(lambda _input: fake_msg)
 
         import langchain_google_genai
-        monkeypatch.setattr(langchain_google_genai, "ChatGoogleGenerativeAI",
-                            MagicMock(return_value=fake_llm))
+
+        monkeypatch.setattr(
+            langchain_google_genai, "ChatGoogleGenerativeAI", MagicMock(return_value=fake_llm)
+        )
 
         result = get_market_scores("Some report", "Figma", prefer_llm=True)
         assert result["market_opportunity"] == 60

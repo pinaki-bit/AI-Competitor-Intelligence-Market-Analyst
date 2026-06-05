@@ -23,13 +23,13 @@ logger = logging.getLogger("agent_orchestrator")
 # not for billing.
 _GEMINI_COST_PER_1K = {
     # Current generation
-    "gemini-2.5-pro":     {"input": 0.00125,  "output": 0.010},
-    "gemini-2.5-flash":   {"input": 0.0003,   "output": 0.0025},
-    "gemini-2.0-flash":   {"input": 0.0001,   "output": 0.0004},
+    "gemini-2.5-pro": {"input": 0.00125, "output": 0.010},
+    "gemini-2.5-flash": {"input": 0.0003, "output": 0.0025},
+    "gemini-2.0-flash": {"input": 0.0001, "output": 0.0004},
     "gemini-2.0-flash-lite": {"input": 0.000075, "output": 0.0003},
     # Legacy — still listed so older keys keep working as fallbacks
-    "gemini-1.5-pro":     {"input": 0.00125,  "output": 0.005},
-    "gemini-1.5-flash":   {"input": 0.000075, "output": 0.0003},
+    "gemini-1.5-pro": {"input": 0.00125, "output": 0.005},
+    "gemini-1.5-flash": {"input": 0.000075, "output": 0.0003},
     "gemini-1.5-flash-8b": {"input": 0.0000375, "output": 0.00015},
 }
 _DEFAULT_PRICING_KEY = "gemini-2.0-flash"
@@ -71,7 +71,7 @@ def _is_model_not_found(exc: Exception) -> bool:
     return any(h.lower() in msg for h in _MODEL_NOT_FOUND_HINTS)
 
 
-class BudgetExceeded(RuntimeError):
+class BudgetExceededError(RuntimeError):
     """Raised when the per-run USD budget is exceeded."""
 
 
@@ -86,12 +86,14 @@ class CostGuard:
 
     def record(self, model: str, input_tokens: int, output_tokens: int) -> None:
         pricing = _GEMINI_COST_PER_1K.get(model, _GEMINI_COST_PER_1K[_DEFAULT_PRICING_KEY])
-        cost = (input_tokens / 1000.0) * pricing["input"] + (output_tokens / 1000.0) * pricing["output"]
+        cost = (input_tokens / 1000.0) * pricing["input"] + (output_tokens / 1000.0) * pricing[
+            "output"
+        ]
         with self._lock:
             self._spent += cost
             self.calls += 1
             if self._spent > self.budget_usd:
-                raise BudgetExceeded(
+                raise BudgetExceededError(
                     f"Run budget exceeded: ${self._spent:.4f} > ${self.budget_usd:.4f} "
                     f"after {self.calls} LLM calls. Set AGENT_BUDGET_USD to raise the cap."
                 )
@@ -249,9 +251,14 @@ class RateLimiter:
 _llm_limiter = RateLimiter(max_calls=12, per_seconds=60.0)
 
 
-def retry(max_attempts: int = 3, initial_delay: float = 1.0, backoff: float = 2.0,
-          retry_on: tuple = (Exception,)):
+def retry(
+    max_attempts: int = 3,
+    initial_delay: float = 1.0,
+    backoff: float = 2.0,
+    retry_on: tuple = (Exception,),
+):
     """Retry decorator with exponential backoff."""
+
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -260,7 +267,7 @@ def retry(max_attempts: int = 3, initial_delay: float = 1.0, backoff: float = 2.
             for attempt in range(1, max_attempts + 1):
                 try:
                     return func(*args, **kwargs)
-                except BudgetExceeded:
+                except BudgetExceededError:
                     # Never retry a budget error — it will just keep failing
                     raise
                 except retry_on as e:
@@ -268,12 +275,16 @@ def retry(max_attempts: int = 3, initial_delay: float = 1.0, backoff: float = 2.
                     if attempt == max_attempts:
                         logger.error(f"{func.__name__} failed after {max_attempts} attempts: {e}")
                         raise
-                    logger.warning(f"{func.__name__} attempt {attempt}/{max_attempts} failed: {e}. "
-                                   f"Retrying in {delay:.1f}s...")
+                    logger.warning(
+                        f"{func.__name__} attempt {attempt}/{max_attempts} failed: {e}. "
+                        f"Retrying in {delay:.1f}s..."
+                    )
                     time.sleep(delay)
                     delay *= backoff
             raise last_exc
+
         return wrapper
+
     return decorator
 
 
@@ -288,6 +299,7 @@ def tavily_search(query: str, max_results: int = 5) -> str:
         return "Error: TAVILY_API_KEY is not set."
 
     from tavily import TavilyClient
+
     client = TavilyClient(api_key=api_key)
     logger.info(f"Executing Tavily search for query: {query}")
     response = client.search(query=query, max_results=max_results)
@@ -322,14 +334,19 @@ def run_custom_agent_analysis(topic: str, depth: str, status_callback=None) -> s
     # This fixes the "Figma", "Vercel" → rejected / misread issues.
     topic = _sanitize_topic(topic)
     if not topic:
-        raise ValueError("Topic is empty after sanitization — please enter a company name or product niche.")
+        raise ValueError(
+            "Topic is empty after sanitization — please enter a company name or product niche."
+        )
 
     # Build the LLM for the first model that we can construct without error.
     # Construction rarely fails — the 404 surfaces on the first .invoke().
     # We pick the first candidate; fallback kicks in inside _invoke().
     model_name = candidates[0]
     if status_callback:
-        status_callback("Researcher", f"Using Gemini model: {model_name} (fallbacks: {', '.join(candidates[1:]) or 'none'})")
+        status_callback(
+            "Researcher",
+            f"Using Gemini model: {model_name} (fallbacks: {', '.join(candidates[1:]) or 'none'})",
+        )
 
     llm = ChatGoogleGenerativeAI(
         model=model_name,
@@ -364,14 +381,18 @@ def run_custom_agent_analysis(topic: str, depth: str, status_callback=None) -> s
                 f"Falling back to '{new_model}'."
             )
             if status_callback:
-                status_callback("Researcher", f"⚠ {model_name} unavailable — switching to {new_model}")
+                status_callback(
+                    "Researcher", f"⚠ {model_name} unavailable — switching to {new_model}"
+                )
             model_name = new_model
             llm = _build_llm(new_model)
             chain = prompt | llm
             msg = chain.invoke(vars)
 
-        content = msg.content if isinstance(msg.content, str) else "".join(
-            getattr(c, "text", str(c)) for c in msg.content
+        content = (
+            msg.content
+            if isinstance(msg.content, str)
+            else "".join(getattr(c, "text", str(c)) for c in msg.content)
         )
         usage = getattr(msg, "usage_metadata", None) or {}
         in_tok = usage.get("input_tokens") or estimate_tokens(str(vars))
@@ -408,8 +429,7 @@ def run_custom_agent_analysis(topic: str, depth: str, status_callback=None) -> s
         "Output a structured markdown profile of {topic}."
     )
 
-    research_report = _invoke(researcher_prompt,
-                              topic=topic, search_results=search_results)
+    research_report = _invoke(researcher_prompt, topic=topic, search_results=search_results)
 
     # ----------------------------------------------------
     # Step 2: Competitor Analyst Agent
@@ -424,7 +444,9 @@ def run_custom_agent_analysis(topic: str, depth: str, status_callback=None) -> s
     comp_results: list[str] = []
     for q in comp_queries[:2]:
         comp_results.append(tavily_search(q, max_results=6 if depth == "Deep Dive" else 3))
-    comp_search_results = "\n\n".join(comp_results) or "No competitor data was returned for this topic."
+    comp_search_results = (
+        "\n\n".join(comp_results) or "No competitor data was returned for this topic."
+    )
 
     if status_callback:
         status_callback("Analyst", "Conducting SWOT analysis and competitor benchmarking...")
@@ -446,9 +468,12 @@ def run_custom_agent_analysis(topic: str, depth: str, status_callback=None) -> s
         "3. A complete SWOT analysis (Strengths, Weaknesses, Opportunities, Threats) for {topic}."
     )
 
-    analysis_report = _invoke(analyst_prompt,
-                              topic=topic, research_report=research_report,
-                              comp_search_results=comp_search_results)
+    analysis_report = _invoke(
+        analyst_prompt,
+        topic=topic,
+        research_report=research_report,
+        comp_search_results=comp_search_results,
+    )
 
     # ----------------------------------------------------
     # Step 3: Report Writer Agent
@@ -469,9 +494,9 @@ def run_custom_agent_analysis(topic: str, depth: str, status_callback=None) -> s
         "Start directly with the title '# Market Intelligence Report: {topic}'."
     )
 
-    final_report = _invoke(writer_prompt,
-                           topic=topic, research_report=research_report,
-                           analysis_report=analysis_report)
+    final_report = _invoke(
+        writer_prompt, topic=topic, research_report=research_report, analysis_report=analysis_report
+    )
 
     if status_callback:
         status_callback("Writer", f"Analysis complete! (≈${guard.spent:.4f} estimated)")
@@ -486,7 +511,7 @@ def run_crew_analysis(topic: str, depth: str, status_callback=None) -> str:
     Wraps the run with a CostGuard via a per-step callback so a runaway
     CrewAI iteration can't burn through API budget. CrewAI's internal LLM
     calls aren't directly hookable, so we estimate spend per step and
-    abort with BudgetExceeded when the cap is hit.
+    abort with BudgetExceededError when the cap is hit.
     """
     from crewai import Agent, Crew, Process, Task
     from crewai.tools import tool
@@ -500,7 +525,9 @@ def run_crew_analysis(topic: str, depth: str, status_callback=None) -> str:
     # consistent regardless of which orchestrator is selected.
     topic = _sanitize_topic(topic)
     if not topic:
-        raise ValueError("Topic is empty after sanitization — please enter a company name or product niche.")
+        raise ValueError(
+            "Topic is empty after sanitization — please enter a company name or product niche."
+        )
 
     if status_callback:
         status_callback("Researcher", f"Using Gemini model: {model_name}")
@@ -527,7 +554,7 @@ def run_crew_analysis(topic: str, depth: str, status_callback=None) -> str:
             in_tok = estimate_tokens(text)
             out_tok = max(1, len(text) // 8)  # output is typically smaller
             guard.record(model_name, in_tok, out_tok)
-        except BudgetExceeded as be:
+        except BudgetExceededError as be:
             logger.warning(f"CrewAI step hit budget cap: {be}")
             _aborted["flag"] = True
             raise
@@ -550,13 +577,13 @@ def run_crew_analysis(topic: str, depth: str, status_callback=None) -> str:
         backstory=f"You are an expert market research analyst. Your job is to crawl the web, find tech stacks, key features, pricing, and recent news about {topic}, a real, named company or product. If web results are thin, fall back on your training-data knowledge.",
         tools=[web_search_tool],
         llm=llm,
-        verbose=True
+        verbose=True,
     )
 
     research_task = Task(
         description=f"Conduct deep research on {topic}. {topic} is a real, well-known company or product — treat it as a specific named entity. Gather features, recent news (2024-2026), target audience, and tech stack details. If search results are thin, rely on your training knowledge of {topic}.",
         expected_output="A structured markdown summary of the company/product details, tech stack, features, and recent news.",
-        agent=researcher
+        agent=researcher,
     )
 
     # Analyst
@@ -569,13 +596,13 @@ def run_crew_analysis(topic: str, depth: str, status_callback=None) -> str:
         backstory=f"You are a veteran competitive intelligence specialist. You identify the top 3 direct competitors of {topic}, analyze their strengths and weaknesses, and formulate a clear SWOT matrix. Use your training knowledge of {topic}'s market category to identify real competitors if web results are thin.",
         tools=[web_search_tool],
         llm=llm,
-        verbose=True
+        verbose=True,
     )
 
     analyst_task = Task(
         description=f"Identify the top 3 REAL direct competitors of {topic}. {topic} is a specific company or product — name actual competitors from the same market category. Perform a SWOT analysis comparing {topic} against these competitors.",
         expected_output="A comprehensive SWOT analysis layout and a comparison table of the top 3 competitors with key metrics (features, pricing, market share).",
-        agent=analyst
+        agent=analyst,
     )
 
     # Writer
@@ -587,13 +614,13 @@ def run_crew_analysis(topic: str, depth: str, status_callback=None) -> str:
         goal="Compile and write a polished, professional market intelligence report",
         backstory="You are a professional business writer. You specialize in taking raw competitor data and SWOT analysis and writing clear, engaging executive-level reports formatted in Markdown.",
         llm=llm,
-        verbose=True
+        verbose=True,
     )
 
     writer_task = Task(
         description=f"Synthesize the research and SWOT analysis into a final, polished executive report in Markdown. Ensure the report has a clean structure with clear headers (H1, H2, H3), bullet points, and tables. Do not include any markdown outer wrappers like ```markdown. Start directly with '# Market Intelligence Report: {topic}'.",
         expected_output="The final market intelligence report in clean Markdown formatting, ready to be converted into a PDF. Starting directly with '# Market Intelligence Report: {topic}'.",
-        agent=writer
+        agent=writer,
     )
 
     if status_callback:
@@ -610,12 +637,12 @@ def run_crew_analysis(topic: str, depth: str, status_callback=None) -> str:
 
     try:
         result = crew.kickoff(inputs={"topic": topic})
-    except BudgetExceeded:
+    except BudgetExceededError:
         raise
     except Exception:
-        # If the step callback aborted us, surface that as BudgetExceeded
+        # If the step callback aborted us, surface that as BudgetExceededError
         if _aborted["flag"]:
-            raise BudgetExceeded(
+            raise BudgetExceededError(
                 f"CrewAI run aborted: ${guard.spent:.4f} exceeded the per-run budget."
             ) from None
         raise
@@ -636,6 +663,7 @@ def run_analysis(topic: str, depth: str, status_callback=None) -> tuple[str, str
         logger.info("Attempting to run analysis with CrewAI...")
         # Check if crewai can be imported
         import crewai
+
         # Verify crewai has expected attributes to make sure it's valid
         _ = crewai.Agent
 
@@ -667,13 +695,13 @@ def run_mock_analysis(topic: str, status_callback=None) -> str:
         ("Researcher", f"Crawling Tavily index — query: '{topic} company overview features'..."),
         ("Researcher", "Extracted 12 search results. Parsing tech stack & feature lists..."),
         ("Researcher", "Compiling product profile, target audience & recent news..."),
-        ("Analyst",   "Identifying top 3 direct competitors in the market..."),
-        ("Analyst",   "Benchmarking pricing models, feature depth & market position..."),
-        ("Analyst",   "Running SWOT matrix — cross-referencing strengths vs competitor gaps..."),
-        ("Analyst",   "Scoring market opportunity, competitive pressure & growth trajectory..."),
-        ("Writer",    "Drafting Executive Summary & Market Overview sections..."),
-        ("Writer",    "Formatting Competitor Benchmark Table & SWOT quadrants..."),
-        ("Writer",    "Adding Strategic Recommendations & finalizing report structure..."),
+        ("Analyst", "Identifying top 3 direct competitors in the market..."),
+        ("Analyst", "Benchmarking pricing models, feature depth & market position..."),
+        ("Analyst", "Running SWOT matrix — cross-referencing strengths vs competitor gaps..."),
+        ("Analyst", "Scoring market opportunity, competitive pressure & growth trajectory..."),
+        ("Writer", "Drafting Executive Summary & Market Overview sections..."),
+        ("Writer", "Formatting Competitor Benchmark Table & SWOT quadrants..."),
+        ("Writer", "Adding Strategic Recommendations & finalizing report structure..."),
     ]
 
     for agent, msg in steps:
@@ -844,7 +872,7 @@ def _parse_score_json(text: str) -> dict | None:
     end = s.rfind("}")
     if start == -1 or end == -1 or end <= start:
         return None
-    candidate = s[start:end + 1]
+    candidate = s[start : end + 1]
     try:
         data = json.loads(candidate)
     except (ValueError, json.JSONDecodeError):
@@ -894,8 +922,10 @@ def score_market_with_llm(
         prompt = ChatPromptTemplate.from_template(_SCORING_PROMPT)
         chain = prompt | llm
         msg = chain.invoke({"topic": topic, "report": truncated})
-        content = msg.content if isinstance(msg.content, str) else "".join(
-            getattr(c, "text", str(c)) for c in msg.content
+        content = (
+            msg.content
+            if isinstance(msg.content, str)
+            else "".join(getattr(c, "text", str(c)) for c in msg.content)
         )
         return _parse_score_json(content)
     except Exception as e:
@@ -931,23 +961,29 @@ def _heuristic_market_scores(report_markdown: str, topic: str) -> dict:
         return max(lo, min(hi, value))
 
     return {
-        "market_opportunity":  clamp(base(70, 20) + signal(
-            ["opportunit", "growth", "expansion", "emerging", "untapped"])),
-        "competitive_pressure":clamp(base(65, 25) + signal(
-            ["competit", "rival", "incumbent", "market share", "wars"])),
-        "growth_trajectory":   clamp(base(75, 18) + signal(
-            ["growth", "scaling", "traction", "adoption", "momentum"])),
-        "innovation_score":    clamp(base(68, 22) + signal(
-            ["innovat", "ai-native", "differenti", "novel", "patent"])),
-        "risk_level":          clamp(base(45, 30) + signal(
-            ["risk", "threat", "challenge", "vulnerab", "concern", "headwind"])),
-        "market_maturity":     clamp(base(55, 20) + signal(
-            ["mature", "saturat", "established", "consolidat"])),
+        "market_opportunity": clamp(
+            base(70, 20) + signal(["opportunit", "growth", "expansion", "emerging", "untapped"])
+        ),
+        "competitive_pressure": clamp(
+            base(65, 25) + signal(["competit", "rival", "incumbent", "market share", "wars"])
+        ),
+        "growth_trajectory": clamp(
+            base(75, 18) + signal(["growth", "scaling", "traction", "adoption", "momentum"])
+        ),
+        "innovation_score": clamp(
+            base(68, 22) + signal(["innovat", "ai-native", "differenti", "novel", "patent"])
+        ),
+        "risk_level": clamp(
+            base(45, 30)
+            + signal(["risk", "threat", "challenge", "vulnerab", "concern", "headwind"])
+        ),
+        "market_maturity": clamp(
+            base(55, 20) + signal(["mature", "saturat", "established", "consolidat"])
+        ),
     }
 
 
-def get_market_scores(report_markdown: str, topic: str,
-                      prefer_llm: bool = True) -> dict:
+def get_market_scores(report_markdown: str, topic: str, prefer_llm: bool = True) -> dict:
     """
     Return market intelligence scores for the report.
 

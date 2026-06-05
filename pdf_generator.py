@@ -15,33 +15,136 @@ Handles a meaningful subset of CommonMark that the LLM typically produces:
 Anything unrecognized falls back to a paragraph render — we never crash.
 """
 
-import re
 import os
+import re
 import unicodedata
 from datetime import datetime
+
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 
 # Helvetica (the only built-in font guaranteed to exist) covers Latin-1.
 # Anything outside it gets ASCII-folded so the PDF doesn't blow up.
+_UNICODE_FALLBACK = {
+    # Dashes / hyphens (Latin-1 hyphen is 0x2D, but these come up constantly)
+    0x2010: "-",
+    0x2011: "-",
+    0x2012: "-",
+    0x2013: "-",
+    0x2014: "-",
+    0x2015: "-",
+    0x2212: "-",
+    0x2027: "-",
+    # Quotes / apostrophes
+    0x2018: "'",
+    0x2019: "'",
+    0x201A: "'",
+    0x201B: "'",
+    0x201C: '"',
+    0x201D: '"',
+    0x201E: '"',
+    0x201F: '"',
+    0x2039: "<",
+    0x203A: ">",
+    # Ellipsis, dots, bullets
+    0x2026: "...",
+    0x00B7: "*",
+    0x2022: "*",
+    0x2023: "*",
+    0x25CF: "*",
+    0x25CB: "*",
+    0x25A0: "*",
+    0x25A1: "*",
+    0x2605: "*",
+    0x2606: "*",
+    0x2660: "*",
+    0x2663: "*",
+    0x2665: "*",
+    0x2666: "*",
+    # Arrows
+    0x2190: "<-",
+    0x2191: "^",
+    0x2192: "->",
+    0x2193: "v",
+    0x2194: "<->",
+    0x21D0: "<=",
+    0x21D2: "=>",
+    0x21A6: "=>",
+    0x21B6: "<-",
+    0x21B7: "->",
+    # Math-ish glyphs the LLM loves but Helvetica lacks
+    0x00B1: "+/-",
+    0x00D7: "x",
+    0x00F7: "/",
+    0x221E: "inf",
+    0x2260: "!=",
+    0x2264: "<=",
+    0x2265: ">=",
+    0x2248: "~",
+    0x221A: "sqrt",
+    0x00BD: "1/2",
+    0x00BC: "1/4",
+    0x00BE: "3/4",
+    0x2030: "%o",
+    0x2031: "%oo",
+    # Legal / commercial symbols
+    0x00A9: "(c)",
+    0x00AE: "(R)",
+    0x2122: "(TM)",
+    0x2120: "(SM)",
+    0x20AC: "EUR",
+    0x00A3: "GBP",
+    0x00A5: "JPY",
+    0x00A2: "c",
+    0x00B5: "u",
+    # Whitespace / invisible characters
+    0x00A0: " ",
+    0x2002: " ",
+    0x2003: " ",
+    0x2009: " ",
+    0x200A: " ",
+    0x200B: "",
+    0x200C: "",
+    0x200D: "",
+    0xFEFF: "",
+    0x00AD: "",
+    # Misc
+    0x00B6: "P",
+    0x00A7: "S",
+    0x00B0: "deg",
+    0x2020: "+",
+    0x2021: "++",
+    0x00A4: "$",
+    0x2713: "v",
+    0x2717: "x",
+    0x2714: "v",
+    0x2718: "x",
+    0x271A: "+",
+    0x2716: "x",
+}
+
+
 def _safe_text(s: str) -> str:
+    """Fold arbitrary Unicode into a Helvetica-safe ASCII-ish string.
+
+    Latin-1 (codepoints 0-255) is passed through as-is. Anything above
+    gets transliterated via _UNICODE_FALLBACK. Unmapped characters become
+    "?" so the PDF never crashes on stray glyphs the LLM emits.
+    """
     if not s:
         return ""
     s = unicodedata.normalize("NFKC", s)
     out = []
     for ch in s:
         cp = ord(ch)
+        # A few low-codepoint characters survive NFKC but are still unsafe
+        # for fpdf2 / Helvetica: strip them explicitly.
+        if cp in (0x00AD,):  # soft hyphen
+            continue
         if cp < 256:
             out.append(ch)
         else:
-            # Best-effort transliteration for common punctuation / symbols
-            repl = {
-                0x2014: "-", 0x2013: "-", 0x2018: "'", 0x2019: "'",
-                0x201C: '"', 0x201D: '"', 0x2026: "...", 0x00B7: "*",
-                0x2713: "v", 0x2717: "x", 0x2192: "->", 0x2190: "<-",
-                0x2022: "*", 0x25CF: "*", 0x00A0: " ",
-            }.get(cp)
-            out.append(repl if repl is not None else "?")
+            out.append(_UNICODE_FALLBACK.get(cp, "?"))
     return "".join(out)
 
 
@@ -60,10 +163,24 @@ class MarketReportPDF(FPDF):
             return
         self.set_font("helvetica", "I", 8)
         self.set_text_color(100, 116, 139)
-        self.cell(0, 10, f"Market & Competitor Intelligence: {self.title_text}",
-                  border=0, new_x=XPos.RIGHT, new_y=YPos.TOP, align="L")
-        self.cell(0, 10, datetime.now().strftime("%B %Y"),
-                  border=0, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="R")
+        self.cell(
+            0,
+            10,
+            f"Market & Competitor Intelligence: {self.title_text}",
+            border=0,
+            new_x=XPos.RIGHT,
+            new_y=YPos.TOP,
+            align="L",
+        )
+        self.cell(
+            0,
+            10,
+            datetime.now().strftime("%B %Y"),
+            border=0,
+            new_x=XPos.LMARGIN,
+            new_y=YPos.NEXT,
+            align="R",
+        )
         self.set_draw_color(226, 232, 240)
         self.line(15, 27, 195, 27)
         self.ln(5)
@@ -74,10 +191,24 @@ class MarketReportPDF(FPDF):
         self.set_y(-15)
         self.set_font("helvetica", "I", 8)
         self.set_text_color(148, 163, 184)
-        self.cell(0, 10, f"Page {self.page_no()} of {{nb}}",
-                  border=0, new_x=XPos.RIGHT, new_y=YPos.TOP, align="C")
-        self.cell(0, 10, "Confidential - AI Market Analyst Team",
-                  border=0, new_x=XPos.RIGHT, new_y=YPos.TOP, align="R")
+        self.cell(
+            0,
+            10,
+            f"Page {self.page_no()} of {{nb}}",
+            border=0,
+            new_x=XPos.RIGHT,
+            new_y=YPos.TOP,
+            align="C",
+        )
+        self.cell(
+            0,
+            10,
+            "Confidential - AI Market Analyst Team",
+            border=0,
+            new_x=XPos.RIGHT,
+            new_y=YPos.TOP,
+            align="R",
+        )
 
     def draw_cover_page(self):
         self.add_page()
@@ -95,8 +226,14 @@ class MarketReportPDF(FPDF):
         self.set_y(85)
         self.set_font("helvetica", "B", 14)
         self.set_text_color(226, 232, 240)
-        self.cell(0, 10, f"Subject: {self.subtitle_text.upper()}",
-                  new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+        self.cell(
+            0,
+            10,
+            f"Subject: {self.subtitle_text.upper()}",
+            new_x=XPos.LMARGIN,
+            new_y=YPos.NEXT,
+            align="C",
+        )
 
         self.set_y(150)
         self.set_font("helvetica", "B", 12)
@@ -104,8 +241,14 @@ class MarketReportPDF(FPDF):
         self.cell(0, 10, "PREPARED BY", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
         self.set_font("helvetica", "", 11)
         self.set_text_color(51, 65, 85)
-        self.cell(0, 6, "AI Competitor Intelligence & Market Analyst Team",
-                  new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+        self.cell(
+            0,
+            6,
+            "AI Competitor Intelligence & Market Analyst Team",
+            new_x=XPos.LMARGIN,
+            new_y=YPos.NEXT,
+            align="C",
+        )
 
         self.ln(10)
         self.set_font("helvetica", "B", 12)
@@ -113,14 +256,21 @@ class MarketReportPDF(FPDF):
         self.cell(0, 10, "DATE OF ISSUE", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
         self.set_font("helvetica", "", 11)
         self.set_text_color(51, 65, 85)
-        self.cell(0, 6, datetime.now().strftime("%B %d, %Y"),
-                  new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+        self.cell(
+            0,
+            6,
+            datetime.now().strftime("%B %d, %Y"),
+            new_x=XPos.LMARGIN,
+            new_y=YPos.NEXT,
+            align="C",
+        )
 
         self.set_y(-30)
         self.set_font("helvetica", "I", 9)
         self.set_text_color(100, 116, 139)
         self.multi_cell(
-            0, 5,
+            0,
+            5,
             "This report contains automated research and analysis gathered by "
             "autonomous web-crawling agents. The contents are generated using "
             "generative AI models and Tavily search APIs.",
@@ -203,8 +353,7 @@ def _render_table(pdf, rows):
     col_width = available_width / col_count
     pdf.ln(4)
 
-    with pdf.table(width=available_width,
-                   col_widths=[col_width] * col_count) as t:
+    with pdf.table(width=available_width, col_widths=[col_width] * col_count) as t:
         # Header
         hdr = t.row()
         pdf.set_font("helvetica", "B", 10)
@@ -245,7 +394,6 @@ def generate_pdf_from_markdown(markdown_text: str, company_name: str, output_pat
     code_buf: list[str] = []
     in_table = False
     table_rows: list[list[str]] = []
-    in_list = False
 
     def flush_table():
         nonlocal in_table, table_rows
@@ -264,7 +412,7 @@ def generate_pdf_from_markdown(markdown_text: str, company_name: str, output_pat
         pdf.set_font("helvetica", "", 9)
         # Force a left-margin start so multi_cell has full width to work with
         pdf.set_x(pdf.l_margin)
-        for cl in (code_buf or [""]):
+        for cl in code_buf or [""]:
             text = _safe_text(cl) or " "
             pdf.multi_cell(0, 5, text, fill=True)
             # multi_cell leaves x at the right margin; reset for the next line
@@ -305,13 +453,11 @@ def generate_pdf_from_markdown(markdown_text: str, company_name: str, output_pat
 
         # ── blank line ─────────────────────────────────────
         if not line.strip():
-            in_list = False
             pdf.ln(3)
             continue
 
         # ── horizontal rule ────────────────────────────────
         if re.fullmatch(r"\s*(-{3,}|\*{3,}|_{3,})\s*", line):
-            in_list = False
             pdf.set_draw_color(226, 232, 240)
             y = pdf.get_y() + 1
             pdf.line(15, y, 195, y)
@@ -321,15 +467,13 @@ def generate_pdf_from_markdown(markdown_text: str, company_name: str, output_pat
         # ── headings ───────────────────────────────────────
         m = re.match(r"^(#{1,6})\s+(.*)$", line)
         if m:
-            in_list = False
             level = len(m.group(1))
             text = m.group(2).strip()
             if level == 1:
                 pdf.ln(6)
                 pdf.set_font("helvetica", "B", 18)
                 pdf.set_text_color(15, 23, 42)
-                pdf.cell(0, 10, _safe_text(text),
-                         new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.cell(0, 10, _safe_text(text), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 pdf.set_draw_color(79, 70, 229)
                 pdf.line(15, pdf.get_y() - 1, 195, pdf.get_y() - 1)
                 pdf.ln(4)
@@ -337,8 +481,7 @@ def generate_pdf_from_markdown(markdown_text: str, company_name: str, output_pat
                 pdf.ln(5)
                 pdf.set_font("helvetica", "B", 14)
                 pdf.set_text_color(30, 41, 59)
-                pdf.cell(0, 8, _safe_text(text),
-                         new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.cell(0, 8, _safe_text(text), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 pdf.set_draw_color(226, 232, 240)
                 pdf.line(15, pdf.get_y() - 1, 100, pdf.get_y() - 1)
                 pdf.ln(3)
@@ -346,8 +489,7 @@ def generate_pdf_from_markdown(markdown_text: str, company_name: str, output_pat
                 pdf.ln(3)
                 pdf.set_font("helvetica", "B", 12 if level == 3 else 11)
                 pdf.set_text_color(79, 70, 229)
-                pdf.cell(0, 6, _safe_text(text),
-                         new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.cell(0, 6, _safe_text(text), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 pdf.ln(2)
             continue
 
@@ -364,7 +506,6 @@ def generate_pdf_from_markdown(markdown_text: str, company_name: str, output_pat
             pdf.write(6, bullet)
             pdf.set_x(x_start + 6 + (level - 1) * 4)
             _write_rich(pdf, content, 6, indent_after=True)
-            in_list = True
             continue
 
         # ── numbered list ──────────────────────────────────
@@ -374,14 +515,12 @@ def generate_pdf_from_markdown(markdown_text: str, company_name: str, output_pat
             pdf.set_text_color(51, 65, 85)
             pdf.write(6, "  -  ")
             _write_rich(pdf, m.group(1), 6, indent_after=True)
-            in_list = True
             continue
 
         # ── paragraph (fallback) ───────────────────────────
         pdf.set_font("helvetica", "", 10.5)
         pdf.set_text_color(51, 65, 85)
         _write_rich(pdf, line, 6, indent_after=True)
-        in_list = False
 
     # Flush trailing block constructs
     flush_table()

@@ -1,4 +1,5 @@
 """Tests for history_store.py — atomic persistence."""
+
 import json
 import threading
 from pathlib import Path
@@ -35,8 +36,9 @@ class TestLoadSave:
         nested = tmp_history_path.parent / "deeply" / "nested" / "history.json"
         monkeypatch.setenv("MARKET_ANALYST_HISTORY_PATH", str(nested))
         assert not nested.parent.exists()
-        save_history([{"topic": "Figma", "mode": "x", "markdown": "m",
-                        "scores": {}, "timestamp": "now"}])
+        save_history(
+            [{"topic": "Figma", "mode": "x", "markdown": "m", "scores": {}, "timestamp": "now"}]
+        )
         assert nested.exists()
 
     def test_save_then_load_roundtrip(self, tmp_history_path):
@@ -56,8 +58,7 @@ class TestLoadSave:
         assert load_history() == []
 
     def test_load_returns_empty_for_wrong_schema(self, tmp_history_path):
-        tmp_history_path.write_text(json.dumps({"version": 99, "items": []}),
-                                    encoding="utf-8")
+        tmp_history_path.write_text(json.dumps({"version": 99, "items": []}), encoding="utf-8")
         # version mismatch → ignored
         assert load_history() == []
 
@@ -78,16 +79,24 @@ class TestLoadSave:
         assert len(loaded) == 20  # default cap
 
     def test_save_writes_valid_json(self, tmp_history_path):
-        save_history([{"topic": "X", "mode": "x", "markdown": "m",
-                        "scores": {"a": 1}, "timestamp": "t",
-                        "unicode": "résumé"}])
+        save_history(
+            [
+                {
+                    "topic": "X",
+                    "mode": "x",
+                    "markdown": "m",
+                    "scores": {"a": 1},
+                    "timestamp": "t",
+                    "unicode": "résumé",
+                }
+            ]
+        )
         data = json.loads(tmp_history_path.read_text(encoding="utf-8"))
         assert data["version"] == 1
         assert data["items"][0]["unicode"] == "résumé"
 
     def test_save_is_atomic_no_leftover_tmp(self, tmp_history_path):
-        save_history([{"topic": "X", "mode": "x", "markdown": "m",
-                        "scores": {}, "timestamp": "t"}])
+        save_history([{"topic": "X", "mode": "x", "markdown": "m", "scores": {}, "timestamp": "t"}])
         # No leftover temp files in the parent dir
         leftovers = list(tmp_history_path.parent.glob(".history.*.tmp"))
         assert leftovers == []
@@ -98,24 +107,29 @@ class TestLoadSave:
 # ──────────────────────────────────────────────────────────────
 class TestAppend:
     def test_append_to_empty(self, tmp_history_path):
-        result = append_history({"topic": "Figma", "mode": "x", "markdown": "m",
-                                  "scores": {}, "timestamp": "t"})
+        result = append_history(
+            {"topic": "Figma", "mode": "x", "markdown": "m", "scores": {}, "timestamp": "t"}
+        )
         assert len(result) == 1
         assert result[0]["topic"] == "Figma"
 
     def test_append_preserves_order_newest_first(self, tmp_history_path):
-        append_history({"topic": "A", "mode": "x", "markdown": "m",
-                         "scores": {}, "timestamp": "t1"})
-        append_history({"topic": "B", "mode": "x", "markdown": "m",
-                         "scores": {}, "timestamp": "t2"})
-        result = append_history({"topic": "C", "mode": "x", "markdown": "m",
-                                  "scores": {}, "timestamp": "t3"})
+        append_history(
+            {"topic": "A", "mode": "x", "markdown": "m", "scores": {}, "timestamp": "t1"}
+        )
+        append_history(
+            {"topic": "B", "mode": "x", "markdown": "m", "scores": {}, "timestamp": "t2"}
+        )
+        result = append_history(
+            {"topic": "C", "mode": "x", "markdown": "m", "scores": {}, "timestamp": "t3"}
+        )
         assert [r["topic"] for r in result] == ["C", "B", "A"]
 
     def test_append_caps_at_max(self, tmp_history_path):
         for i in range(25):
-            append_history({"topic": f"T{i}", "mode": "x", "markdown": "m",
-                             "scores": {}, "timestamp": f"t{i}"})
+            append_history(
+                {"topic": f"T{i}", "mode": "x", "markdown": "m", "scores": {}, "timestamp": f"t{i}"}
+            )
         result = load_history(max_items=20)
         assert len(result) == 20
         # Newest first
@@ -129,8 +143,15 @@ class TestAppend:
 
         def worker(tid):
             for i in range(n_per_thread):
-                append_history({"topic": f"T{tid}_{i}", "mode": "x", "markdown": "m",
-                                 "scores": {}, "timestamp": "t"})
+                append_history(
+                    {
+                        "topic": f"T{tid}_{i}",
+                        "mode": "x",
+                        "markdown": "m",
+                        "scores": {},
+                        "timestamp": "t",
+                    }
+                )
 
         threads = [threading.Thread(target=worker, args=(t,)) for t in range(n_threads)]
         for t in threads:
@@ -152,8 +173,7 @@ class TestAppend:
 # ──────────────────────────────────────────────────────────────
 class TestClear:
     def test_clear_removes_file(self, tmp_history_path):
-        save_history([{"topic": "X", "mode": "x", "markdown": "m",
-                        "scores": {}, "timestamp": "t"}])
+        save_history([{"topic": "X", "mode": "x", "markdown": "m", "scores": {}, "timestamp": "t"}])
         assert tmp_history_path.exists()
         clear_history()
         assert not tmp_history_path.exists()

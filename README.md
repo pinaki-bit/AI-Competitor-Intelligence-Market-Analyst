@@ -94,7 +94,7 @@ The PDF converter parses Markdown syntax line-by-side and is hardened against ma
 
 ## 🧪 Tests
 
-The project ships with a 105-test `pytest` suite covering the PDF renderer, the agent helpers, model selection / fallback, topic sanitization, market-score parsing, and history persistence. Nothing in the suite hits the network — all LLM and Tavily calls are mocked.
+The project ships with a 116-test `pytest` suite covering the PDF renderer, the agent helpers, model selection / fallback, topic sanitization, market-score parsing, and history persistence. Nothing in the suite hits the network — all LLM and Tavily calls are mocked.
 
 ```powershell
 .\venv\Scripts\Activate.ps1
@@ -109,7 +109,7 @@ Coverage highlights:
 
 ## 💸 Cost & Rate Safety
 
-Every LLM call in both orchestrators (CrewAI and the custom LangChain fallback) is tracked by a `CostGuard` (default $0.50/run, override with `AGENT_BUDGET_USD` env var) and a module-level `RateLimiter` (12 RPM, well under Gemini's free-tier 15 RPM). The `retry` decorator short-circuits on `BudgetExceeded` so a runaway run fails fast instead of burning more spend. The CrewAI path uses a `step_callback` to estimate spend per agent step and abort the crew if the budget cap is hit.
+Every LLM call in both orchestrators (CrewAI and the custom LangChain fallback) is tracked by a `CostGuard` (default $0.50/run, override with `AGENT_BUDGET_USD` env var) and a module-level `RateLimiter` (12 RPM, well under Gemini's free-tier 15 RPM). The `retry` decorator short-circuits on `BudgetExceededError` so a runaway run fails fast instead of burning more spend. The CrewAI path uses a `step_callback` to estimate spend per agent step and abort the crew if the budget cap is hit.
 
 ## 🔁 History & Persistence
 

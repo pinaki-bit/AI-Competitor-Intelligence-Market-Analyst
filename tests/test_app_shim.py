@@ -4,16 +4,15 @@ Streamlit's hot-reload can leave a stale `agents.get_market_scores` in
 memory. The shim inspects the signature at call time so the app works
 with both the 2-arg old form and the 3-arg form with `prefer_llm`.
 """
-import sys
-from pathlib import Path
-from unittest.mock import patch
 
-import pytest
+import sys
+from unittest.mock import patch
 
 
 def _import_app():
     """Import app.py fresh, with streamlit warnings suppressed."""
     import warnings
+
     warnings.filterwarnings("ignore")
     if "app" in sys.modules:
         del sys.modules["app"]
@@ -27,8 +26,14 @@ class TestCallGetMarketScores:
             "# Report about Figma with growth and opportunity", "Figma", demo_mode=True
         )
         # All 6 keys present
-        for k in ("market_opportunity", "competitive_pressure", "growth_trajectory",
-                  "innovation_score", "risk_level", "market_maturity"):
+        for k in (
+            "market_opportunity",
+            "competitive_pressure",
+            "growth_trajectory",
+            "innovation_score",
+            "risk_level",
+            "market_maturity",
+        ):
             assert k in scores, f"missing key: {k}"
         # All values in range
         for v in scores.values():
@@ -44,10 +49,17 @@ class TestCallGetMarketScores:
 
         def old_get_market_scores(report, topic):
             old_sig_calls.append((report, topic))
-            return {k: 42 for k in (
-                "market_opportunity", "competitive_pressure", "growth_trajectory",
-                "innovation_score", "risk_level", "market_maturity",
-            )}
+            return dict.fromkeys(
+                (
+                    "market_opportunity",
+                    "competitive_pressure",
+                    "growth_trajectory",
+                    "innovation_score",
+                    "risk_level",
+                    "market_maturity",
+                ),
+                42,
+            )
 
         with patch.object(app, "get_market_scores", old_get_market_scores):
             scores = app._call_get_market_scores("Some report", "Figma", demo_mode=False)
@@ -64,13 +76,22 @@ class TestCallGetMarketScores:
 
         def old_get_market_scores(report, topic):
             two_arg_calls.append((report, topic))
-            return {k: 50 for k in (
-                "market_opportunity", "competitive_pressure", "growth_trajectory",
-                "innovation_score", "risk_level", "market_maturity",
-            )}
+            return dict.fromkeys(
+                (
+                    "market_opportunity",
+                    "competitive_pressure",
+                    "growth_trajectory",
+                    "innovation_score",
+                    "risk_level",
+                    "market_maturity",
+                ),
+                50,
+            )
 
-        with patch.object(app, "get_market_scores", old_get_market_scores), \
-             patch("app.inspect.signature", side_effect=ValueError("nope")):
+        with (
+            patch.object(app, "get_market_scores", old_get_market_scores),
+            patch("app.inspect.signature", side_effect=ValueError("nope")),
+        ):
             scores = app._call_get_market_scores("Some report", "Figma", demo_mode=True)
 
         assert two_arg_calls == [("Some report", "Figma")]
@@ -85,10 +106,17 @@ class TestCallGetMarketScores:
 
         def fake_get_market_scores(report, topic, prefer_llm=True):
             seen["prefer_llm"] = prefer_llm
-            return {k: 60 for k in (
-                "market_opportunity", "competitive_pressure", "growth_trajectory",
-                "innovation_score", "risk_level", "market_maturity",
-            )}
+            return dict.fromkeys(
+                (
+                    "market_opportunity",
+                    "competitive_pressure",
+                    "growth_trajectory",
+                    "innovation_score",
+                    "risk_level",
+                    "market_maturity",
+                ),
+                60,
+            )
 
         with patch.object(app, "get_market_scores", fake_get_market_scores):
             app._call_get_market_scores("Some report", "Figma", demo_mode=True)

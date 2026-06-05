@@ -3,17 +3,19 @@
 These run without an LLM — they just feed crafted markdown and assert
 that the renderer never crashes and produces a valid PDF.
 """
+
 import os
 import tempfile
+
 import pytest
 from fpdf import FPDF
 
 from pdf_generator import (
-    generate_pdf_from_markdown,
-    _safe_text,
-    _normalize_table_row,
     _is_table_separator,
+    _normalize_table_row,
     _render_table,
+    _safe_text,
+    generate_pdf_from_markdown,
 )
 
 
@@ -42,6 +44,46 @@ class TestSafeText:
     def test_unknown_codepoint_replaced_with_question(self):
         # CJK — not in our transliteration table
         assert _safe_text("日本") == "??"
+
+    def test_trademark_and_copyright_fold(self):
+        # NFKC folds U+2122 (™) to "TM" before our map runs; © and ® are
+        # Latin-1, passed through as-is (fpdf2 silently substitutes a "?"
+        # glyph for them in the PDF, but they don't crash).
+        assert _safe_text("ChatGPT\u2122") == "ChatGPTTM"
+        assert _safe_text("\u00a9 2026 Acme") == "\u00a9 2026 Acme"
+        assert _safe_text("Brand\u00ae") == "Brand\u00ae"
+
+    def test_currency_fold(self):
+        # Euro is U+20AC (mapped to "EUR"); pound/yen are Latin-1
+        # and pass through unchanged.
+        assert _safe_text("Price: \u20ac99") == "Price: EUR99"
+        assert _safe_text("\u00a3 \u00a5") == "\u00a3 \u00a5"
+
+    def test_math_and_arrows_fold(self):
+        # Above-256 chars get mapped; ± (U+00B1) is Latin-1, passes through.
+        assert _safe_text("a \u2192 b") == "a -> b"
+        assert _safe_text("x \u2260 y") == "x != y"
+        assert _safe_text("5 \u00b1 1") == "5 \u00b1 1"
+        assert _safe_text("\u221e") == "inf"
+
+    def test_unicode_dash_variants_all_become_hyphen(self):
+        # Several dash characters should all collapse to ASCII "-"
+        for ch in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212":
+            assert _safe_text(f"a{ch}b") == "a-b", f"failed for U+{ord(ch):04X}"
+
+    def test_invisible_chars_removed(self):
+        # Zero-width / BOM / soft hyphen should be stripped
+        for ch in "\u200b\u200c\u200d\ufeff\u00ad":
+            assert _safe_text(f"a{ch}b") == "ab", f"failed for U+{ord(ch):04X}"
+        # Various unicode spaces collapse to ASCII space
+        for ch in "\u00a0\u2002\u2003\u2009\u200a":
+            assert _safe_text(f"a{ch}b") == "a b", f"failed for U+{ord(ch):04X}"
+
+    def test_nfkc_normalization(self):
+        # Full-width "Hello" should fold to "Hello"
+        assert _safe_text("\uff28\uff45\uff4c\uff4c\uff4f") == "Hello"
+        # Ligature fi
+        assert _safe_text("\ufb01ne") == "fine"
 
 
 # ──────────────────────────────────────────────────────────────
@@ -77,9 +119,8 @@ class TestTableHelpers:
 # ──────────────────────────────────────────────────────────────
 def _gen(md, company="Test Co"):
     """Helper: render markdown to a temp PDF and return the path."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    tmp.close()
-    generate_pdf_from_markdown(md, company, tmp.name)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        generate_pdf_from_markdown(md, company, tmp.name)
     return tmp.name
 
 
@@ -259,3 +300,32 @@ End.
             finally:
                 if os.path.exists(path):
                     os.remove(path)
+
+    def test_unicode_in_body_does_not_crash(self):
+        # Trademarks, euro, arrows, en-dash, etc. sprinkled through the body
+        # should all be folded and the PDF should still be valid.
+        md = """
+# Report
+
+## Section A
+
+- ChatGPT\u2122 leads the market
+- Priced at \u20ac99/month
+- Path: a \u2192 b \u2192 c
+- Range: 5\u201310 users
+- Em-dash for emphasis \u2014 like this
+- Star rating: \u2605\u2605\u2605\u2605\u2606
+
+| Symbol | Name |
+| --- | --- |
+| \u2122 | Trademark |
+| \u20ac | Euro |
+
+End.
+"""
+        path = _gen(md, company="Test \u2014 Co")
+        try:
+            assert _pdf_valid(path)
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
